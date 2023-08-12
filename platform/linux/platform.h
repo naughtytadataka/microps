@@ -51,6 +51,9 @@ mutex_unlock(mutex_t *mutex)
 // Linuxでは SIGRTMIN ～ SIGRTMAX（34～64）までのシグナルをアプリケーションが任意の目的で利用できる。
 // ※ SIGRTMIN（34）に関しては glibc が内部的に利用しているため +1 した番号から利用するようにしている。
 #define INTR_IRQ_BASE (SIGRTMIN + 1)
+// SIGUSR1 は標準的な定数で、UNIX系のシステムでのシグナル処理において特定の意味を持っている
+// 直接SIGUSR1として使うこともできるがより具体的な定数にするためにINTR_IRQ_SOFTIRQとしている？
+#define INTR_IRQ_SOFTIRQ SIGUSR1
 
 #define INTR_IRQ_SHARED 0x0001
 

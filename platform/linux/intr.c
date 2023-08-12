@@ -6,6 +6,7 @@
 #include "platform.h"
 
 #include "util.h"
+#include "net.h"
 
 // 割り込みの情報を保持するための構造体
 struct irq_entry
@@ -101,6 +102,9 @@ intr_thread(void *arg)
         case SIGHUP: // SIGHUPシグナルが受け取られた場合、終了フラグを立てる
             terminate = 1;
             break;
+        case SIGUSR1:
+            net_softirq_handler();
+            break;
         default: // それ以外のシグナルが受け取られた場合、該当する割り込みハンドラを呼び出す
                  // IRQリストを巡回
             for (entry = irqs; entry; entry = entry->next)
@@ -168,5 +172,6 @@ int intr_init(void)
     sigemptyset(&sigmask);
     // SIGHUPシグナルをシグナルマスクに追加
     sigaddset(&sigmask, SIGHUP);
+    sigaddset(&sigmask, SIGUSR1);
     return 0;
 }
