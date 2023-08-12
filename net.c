@@ -117,6 +117,50 @@ net_device_close(struct net_device *dev)
     return 0;
 }
 
+// ネットワークデバイスにインターフェースを追加する関数
+int net_device_add_iface(struct net_device *dev, struct net_iface *iface)
+{
+    // 一時的にインターフェースの情報を保持するための変数
+    struct net_iface *entry;
+
+    // 重複登録のチェック
+    for (entry = dev->ifaces; entry; entry = entry->next)
+    {
+        if (entry->family == iface->family)
+        {
+            errorf("already exists, dev=%s, family=%d", dev->name, entry->family);
+            return -1;
+        }
+    }
+    // exercise7-1
+    // 既存のifacesの先頭ポインタを、追加するifaceのnextに設定。つまり先頭に追加
+    iface->next = dev->ifaces;
+    // 追加するインターフェースのデバイス情報を設定する
+    iface->dev = dev;
+    // デバイスのインターフェイスリストの先頭を追加後に更新
+    dev->ifaces = iface;
+
+    return 0;
+}
+
+// 引数のデバイスとファミリーに対応するインターフェースを返却する関数
+struct net_iface *
+net_device_get_iface(struct net_device *dev, int family)
+{
+    // exercise7-2
+    struct net_iface *entry;
+
+    // リストの終わりまで行くとNULLになるので、一致するインターフェイスが無ければNULLを返す
+    for (entry = dev->ifaces; entry; entry = entry->next)
+    {
+        if (entry->family == family)
+        {
+            break;
+        }
+    }
+    return entry;
+}
+
 // データをネットワークデバイスに出力する関数
 int net_device_output(struct net_device *dev, uint16_t type, const uint8_t *data, size_t len, const void *dst)
 {
