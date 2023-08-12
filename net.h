@@ -61,6 +61,7 @@ struct net_device
 // ・送信関数（transmit）は必須, それ以外の関数は任意
 struct net_device_ops
 {
+    // 二つ目の()で定義されている値か引数を持つ関数を格納できる※C言語は関数も引数に取れる
     int (*open)(struct net_device *dev);
     int (*close)(struct net_device *dev);
     int (*transmit)(struct net_device *dev, uint16_t type, const uint8_t *data, size_t len, const void *dst);
