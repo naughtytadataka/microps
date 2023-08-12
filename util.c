@@ -226,10 +226,7 @@ ntoh32(uint32_t n)
     return endian == __LITTLE_ENDIAN ? byteswap32(n) : n;
 }
 
-/*
- * Checksum
- */
-
+// チェックサム用関数
 uint16_t
 cksum16(uint16_t *addr, uint16_t count, uint32_t init)
 {
