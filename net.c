@@ -1,14 +1,37 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "platform.h"
 
 #include "util.h"
 #include "net.h"
+#include "ip.h"
+
+#define PRIV(x) ((struct net_protocol *)x->priv)
+
+struct net_protocol
+{
+    struct net_protocol *next;
+    uint16_t type;
+    struct queue_head queue; /* input queue */
+    // プロトコルの入力関数へのポインタ
+    void (*handler)(const uint8_t *data, size_t len, struct net_device *dev);
+};
+
+struct net_protocol_queue_entry
+{
+    struct net_device *dev;
+    size_t len;
+    uint8_t data[];
+};
 
 // ネットワークデバイスのリストの先頭を指す変数
 static struct net_device *devices;
+// 登録されているプロトコルのリスト（グローバル変数）※リンクリストの概念
+// リストといいつつもリスト型ではなく、リストの先頭の構造体を指す、nextを追うことで結果的にリストになる
+static struct net_protocol *protocols;
 
 // ネットワークデバイスのメモリを確保する
 struct net_device *
@@ -120,11 +143,75 @@ int net_device_output(struct net_device *dev, uint16_t type, const uint8_t *data
     return 0;
 }
 
+// ネットワークプロトコルを登録する関数
+int net_protocol_register(uint16_t type, void (*handler)(const uint8_t *data, size_t len, struct net_device *dev))
+{
+    struct net_protocol *proto;
+
+    // リストの先頭から、末尾(nextの値がnull)までループする※protoがnullになるとfalse
+    for (proto = protocols; proto; proto = proto->next)
+    {
+        if (type == proto->type)
+        {
+            // タイプが一致してすでに登録済みの時はエラーを返却
+            errorf("already registered, type=0x%04x", type);
+            return -1;
+        }
+    }
+
+    proto = memory_alloc(sizeof(*proto));
+    if (!proto)
+    {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+
+    proto->type = type;
+    // 入力関数を設定
+    proto->handler = handler;
+    // プロトコルリストの先頭に追加
+    proto->next = protocols;
+    protocols = proto;
+    infof("registered, type=0x%04x", type);
+    return 0;
+}
+
 // データを受信するための関数
 int net_input_handler(uint16_t type, const uint8_t *data, size_t len, struct net_device *dev)
 {
-    debugf("dev=%s, type=0x%04x, len=%zu", dev->name, type, len);
-    debugdump(data, len);
+    struct net_protocol *proto;
+    struct net_protocol_queue_entry *entry;
+
+    for (proto = protocols; proto; proto = proto->next)
+    {
+        if (proto->type == type)
+        {
+
+            // excercise4-1
+            // (1)
+            entry = memory_alloc(sizeof(*entry) + len);
+            if (!entry)
+            {
+                errorf("memory_alloc() failure");
+                return -1;
+            }
+            // (2)
+            entry->dev = dev;
+            entry->len = len;
+            memcpy(entry->data, data, len);
+            // (3) 不正解
+            if (!queue_push(&proto->queue, entry)) {
+                errorf("queue_push() failure");
+                memory_free(entry);
+                return -1;
+            }
+            debugf("queue pushed (num:%u), dev=%s, type=0x%04x, len=%zu",
+                   proto->queue.num, dev->name, type, len);
+            debugdump(data, len);
+            return 0;
+        }
+    }
+
     return 0;
 }
 
@@ -172,6 +259,13 @@ int net_init(void)
     if (intr_init() == -1)
     {
         errorf("intr_init() failure");
+        return -1;
+    }
+
+    // プロトコルスタック初期化時にIPの初期化関数を呼び出す
+    if (ip_init() == -1)
+    {
+        errorf("ip_init() failure");
         return -1;
     }
 
