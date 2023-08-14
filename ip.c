@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <string.h>
 
 #include "platform.h"
 #include "util.h"
@@ -267,8 +269,131 @@ ip_input(const uint8_t *data, size_t len, struct net_device *dev)
     }
 
     debugf("dev=%s, iface=%s, protocol=%u, total=%u",
-        dev->name, ip_addr_ntop(iface->unicast, addr, sizeof(addr)), hdr->protocol, total);
+           dev->name, ip_addr_ntop(iface->unicast, addr, sizeof(addr)), hdr->protocol, total);
     ip_dump(data, total);
+}
+
+// IPデータをデバイスに送信する関数
+static int
+ip_output_device(struct ip_iface *iface, const uint8_t *data, size_t len, ip_addr_t dst)
+{
+    uint8_t hwaddr[NET_DEVICE_ADDR_LEN] = {};
+
+    // ネットワークデバイスのフラグがARPのフラグか判定
+    if (NET_IFACE(iface)->dev->flags & NET_DEVICE_FLAG_NEED_ARP)
+    {
+        // 送信先がブロードキャストアドレス
+        if (dst == iface->broadcast || dst == IP_ADDR_BROADCAST)
+        {
+            // ハードウェアアドレスをブロードキャストアドレスにする
+            memcpy(hwaddr, NET_IFACE(iface)->dev->broadcast, NET_IFACE(iface)->dev->alen);
+        }
+        else
+        {
+            errorf("arp does not implement");
+            return -1;
+        }
+    }
+    // exercise8
+    return net_device_output(NET_IFACE(iface)->dev, NET_PROTOCOL_TYPE_IP, data, len, hwaddr);
+}
+
+// データをIPパケットに格納する？
+static ssize_t
+ip_output_core(struct ip_iface *iface, uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, uint16_t id, uint16_t offset)
+{
+    uint8_t buf[IP_TOTAL_SIZE_MAX];
+    struct ip_hdr *hdr;
+    uint16_t hlen, total;
+    char addr[IP_ADDR_STR_LEN];
+
+    // bufの先頭アドレスをipヘッダのポインタにキャスト
+    hdr = (struct ip_hdr *)buf;
+
+    // exercise8
+    hlen = IP_HDR_SIZE_MIN; // ヘッダの最小サイズ
+    // 上位４桁はversion,下位
+    hdr->vhl = (IP_VERSION_IPV4 << 4) | (hlen >> 2);
+    hdr->tos = 0;
+    total = hlen + len;
+    hdr->total = hton16(total);
+    hdr->id = hton16(id);
+    hdr->offset = hton16(offset);
+    hdr->ttl = 0xff;
+    hdr->protocol = protocol;
+    hdr->sum = 0;
+    hdr->src = src;
+    hdr->dst = dst;
+    hdr->sum = cksum16((uint16_t *)hdr, hlen, 0); /* don't convert byteoder */
+    memcpy(hdr + 1, data, len);
+
+    debugf("dev=%s, dst=%s, protocol=%u, len=%u",
+           NET_IFACE(iface)->dev->name, ip_addr_ntop(dst, addr, sizeof(addr)), protocol, total);
+    ip_dump(buf, total);
+    return ip_output_device(iface, buf, total, dst);
+}
+
+static uint16_t
+ip_generate_id(void)
+{
+    static mutex_t mutex = MUTEX_INITIALIZER;
+    static uint16_t id = 128;
+    uint16_t ret;
+
+    mutex_lock(&mutex);
+    ret = id++;
+    mutex_unlock(&mutex);
+    return ret;
+}
+
+// IPデータ送信関数
+ssize_t
+ip_output(uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst)
+{
+    struct ip_iface *iface;
+    char addr[IP_ADDR_STR_LEN];
+    uint16_t id;
+
+    if (src == IP_ADDR_ANY)
+    {
+        errorf("ip routing does not implement");
+        return -1;
+    }
+    else
+    { /* NOTE: I'll rewrite this block later. */
+        // exercise8
+        iface = ip_iface_select(src);
+        if (!iface)
+        {
+            errorf("interface not found, src=%s", ip_addr_ntop(src, addr, sizeof(addr)));
+            return -1;
+        }
+        // 送信先IPアドレスとネットマスクでand演算をして、ネットワーク部のみを取り出す
+        // この端末のネットワークインターフェースのユニキャストアドレスのネットワーク部を取り出す
+        // 両者を比較して同じネットワークに属するか確認
+        // ただし、送信先ipアドレスがブロードキャストアドレスなら必ずスキップ
+        if ((dst & iface->netmask) != (iface->unicast & iface->netmask) && dst != IP_ADDR_BROADCAST)
+        {
+            errorf("not reached, dst=%s", ip_addr_ntop(src, addr, sizeof(addr)));
+            return -1;
+        }
+    }
+    // フラグメンテーション=当該データがこのインターフェースの最大転送サイズを超えた場合にパケットに分割して送信すること。
+    // ただし、今回はフラグメンテーションを考慮しないので、超えたらエラー
+    if (NET_IFACE(iface)->dev->mtu < IP_HDR_SIZE_MIN + len)
+    {
+        errorf("too long, dev=%s, mtu=%u < %zu",
+               NET_IFACE(iface)->dev->name, NET_IFACE(iface)->dev->mtu, IP_HDR_SIZE_MIN + len);
+        return -1;
+    }
+    // ipのid作成
+    id = ip_generate_id();
+    if (ip_output_core(iface, protocol, data, len, iface->unicast, dst, id, 0) == -1)
+    {
+        errorf("ip_output_core() failure");
+        return -1;
+    }
+    return len;
 }
 
 // IP関連の初期化を行う関数
