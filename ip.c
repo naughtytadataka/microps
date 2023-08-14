@@ -26,10 +26,21 @@ struct ip_hdr
     uint8_t options[]; // オプション（可変長）。
 };
 
+// IPプロトコルの構造体
+struct ip_protocol
+{
+    struct ip_protocol *next;
+    uint8_t type;
+    // 同じ引数を持つ関数なら設定できる
+    void (*handler)(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, struct ip_iface *iface);
+};
+
 const ip_addr_t IP_ADDR_ANY = 0x00000000;       /* 0.0.0.0 */
 const ip_addr_t IP_ADDR_BROADCAST = 0xffffffff; /* 255.255.255.255 */
-/* NOTE: if you want to add/delete the entries after net_run(), you need to protect these lists with a mutex. */
+// 登録されているインターフェースのリスト
 static struct ip_iface *ifaces;
+// 登録されているプロトコルのリスト
+static struct ip_protocol *protocols;
 
 // 文字列形式のIPアドレスを数値形式に変換する関数
 int ip_addr_pton(const char *p, ip_addr_t *n)
@@ -191,6 +202,38 @@ ip_iface_select(ip_addr_t addr)
     return entry;
 }
 
+// IPプロトコル登録関数
+int ip_protocol_register(uint8_t type, void (*handler)(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, struct ip_iface *iface))
+{
+    // 新規登録用のデータ構造体を作成
+    struct ip_protocol *entry;
+
+    // exercixe9
+    // プロトコルリストの先頭のポインタを初期値に、処理が終わると次のプロトコルのポインタを格納して次のループ
+    for (entry = protocols; entry; entry = entry->next)
+    {
+        if (entry->type == type)
+        // もう登録済みならエラー返却
+        {
+            errorf("already exists, type=%u", type);
+            return -1;
+        }
+    }
+    entry = memory_alloc(sizeof(*entry));
+    if (!entry)
+    {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    entry->type = type;
+    // 引数handlerの関数をhandlerに設定
+    entry->handler = handler;
+    entry->next = protocols;
+    protocols = entry;
+    infof("registered, type=%u", entry->type);
+    return 0;
+}
+
 // IPデータを処理するための関数
 static void
 ip_input(const uint8_t *data, size_t len, struct net_device *dev)
@@ -200,6 +243,8 @@ ip_input(const uint8_t *data, size_t len, struct net_device *dev)
     uint16_t hlen, total, offset;
     struct ip_iface *iface;
     char addr[IP_ADDR_STR_LEN];
+    // forループ用の変数を宣言(C言語は変数宣言を文頭でしなければならない)
+    struct ip_protocol *proto;
 
     // 受信したデータが最小のIPヘッダサイズよりも小さい場合はエラー
     if (len < IP_HDR_SIZE_MIN)
@@ -271,6 +316,16 @@ ip_input(const uint8_t *data, size_t len, struct net_device *dev)
     debugf("dev=%s, iface=%s, protocol=%u, total=%u",
            dev->name, ip_addr_ntop(iface->unicast, addr, sizeof(addr)), hdr->protocol, total);
     ip_dump(data, total);
+
+    for (proto = protocols; proto; proto = proto->next)
+    {
+        // IPヘッダのプロトコル番号と一致するか判定
+        if (proto->type == hdr->protocol)
+        {
+            proto->handler((uint8_t *)hdr + hlen, total - hlen, hdr->src, hdr->dst, iface);
+            return;
+        }
+    }
 }
 
 // IPデータをデバイスに送信する関数

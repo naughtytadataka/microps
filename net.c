@@ -8,6 +8,7 @@
 #include "util.h"
 #include "net.h"
 #include "ip.h"
+#include "icmp.h"
 
 #define PRIV(x) ((struct net_protocol *)x->priv)
 
@@ -339,7 +340,13 @@ int net_init(void)
         errorf("ip_init() failure");
         return -1;
     }
-
+    // exercise9
+    // ICMPの初期化関数を呼び出す
+    if (icmp_init() == -1)
+    {
+        errorf("icmp_init() failure");
+        return -1;
+    }
     infof("initialized");
     return 0;
 }
