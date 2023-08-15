@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/time.h>
 
+#include "platform.h"
 #include "util.h"
 #include "net.h"
 #include "ether.h"
@@ -15,6 +17,13 @@
 
 #define ARP_OP_REQUEST 1
 #define ARP_OP_REPLY 2
+
+#define ARP_CACHE_SIZE 32
+
+#define ARP_CACHE_STATE_FREE 0
+#define ARP_CACHE_STATE_INCOMPLETE 1
+#define ARP_CACHE_STATE_RESOLVED 2
+#define ARP_CACHE_STATE_STATIC 3
 
 // arpヘッダの構造体
 struct arp_hdr
@@ -35,6 +44,18 @@ struct arp_ether_ip
     uint8_t tha[ETHER_ADDR_LEN]; // 宛先ハードウェアアドレス（Target Hardware Address）
     uint8_t tpa[IP_ADDR_LEN];    // 宛先プロトコルアドレス（Target Protocol Address）※このアドレスのMACアドレスを知りたいはず。
 };
+
+// ARPキャッシュ用の構造体
+struct arp_cache
+{
+    unsigned char state;        // キャッシュの状態
+    ip_addr_t pa;               // Protocol Address
+    uint8_t ha[ETHER_ADDR_LEN]; // Hardware Address
+    struct timeval timestamp;   // 最終更新時刻
+};
+
+static mutex_t mutex = MUTEX_INITIALIZER;
+static struct arp_cache caches[ARP_CACHE_SIZE]; // ARPキャッシュの配列（ARPテーブル）
 
 static char *
 arp_opcode_ntoa(uint16_t opcode)
@@ -79,6 +100,138 @@ static void arp_dump(const uint8_t *data, size_t len)
     hexdump(stderr, data, len);
 #endif
     funlockfile(stderr);
+}
+
+/**
+ * ARPキャッシュエントリを削除します。
+ *
+ * @param cache 削除するARPキャッシュエントリへのポインタ。
+ */
+static void arp_cache_delete(struct arp_cache *cache)
+{
+    char addr1[IP_ADDR_STR_LEN];
+    char addr2[ETHER_ADDR_STR_LEN];
+
+    debugf("[ARP]DELETE: pa=%s, ha=%s", ip_addr_ntop(cache->pa, addr1, sizeof(addr1)), ether_addr_ntop(cache->ha, addr2, sizeof(addr2)));
+
+    // exercise14
+    cache->state = ARP_CACHE_STATE_FREE;
+    cache->pa = 0;
+    memset(cache->ha, 0, ETHER_ADDR_LEN);
+    timerclear(&cache->timestamp);
+}
+
+/**
+ * ARPキャッシュエントリを返却
+ *
+ * @return 割り当てられたARPキャッシュエントリへのポインタ。使用されていないエントリがあればそれを、なければ最も古いエントリ
+ */
+static struct arp_cache *arp_cache_alloc(void)
+{
+    struct arp_cache *entry, *oldest = NULL;
+
+    // ARPテーブル巡回
+    for (entry = caches; entry < tailof(caches); entry++)
+    {
+        // 使用されていない=stateがfreeのentryを返却
+        if (entry->state == ARP_CACHE_STATE_FREE)
+        {
+            return entry;
+        }
+        // freeが無かった場合は最終更新時刻が一番古いentryを取得
+        if (!oldest || timercmp(&oldest->timestamp, &entry->timestamp, >))
+        {
+            oldest = entry;
+        }
+    }
+    // 上記の２つのif分に入らない時はoldestはNULLのまま
+
+    // 一番古いentryを削除
+    arp_cache_delete(oldest);
+    return oldest;
+}
+
+/**
+ * 指定されたIPアドレスに対応するARPキャッシュエントリを返却
+ *
+ * @param pa 検索するIPアドレス。
+ * @return 対応するARPキャッシュエントリへのポインタ。見つからない場合はNULLを返します。
+ */
+static struct arp_cache *arp_cache_select(ip_addr_t pa)
+{
+    // exercise14
+    struct arp_cache *entry;
+
+    for (entry = caches; entry < tailof(caches); entry++)
+    {
+        if (entry->state != ARP_CACHE_STATE_FREE && entry->pa == pa)
+        {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * ARPキャッシュを更新する関数。
+ *
+ * @param pa IPアドレス。
+ * @param ha ハードウェアアドレス。
+ * @return 更新されたARPキャッシュエントリ。エントリが見つからない場合はNULL。
+ */
+static struct arp_cache *arp_cache_update(ip_addr_t pa, const uint8_t *ha)
+{
+    struct arp_cache *cache;
+    char addr1[IP_ADDR_STR_LEN];
+    char addr2[ETHER_ADDR_STR_LEN];
+
+    // exercise14
+    cache = arp_cache_select(pa);
+    if (!cache)
+    {
+        return NULL;
+    }
+    // 状態を解決済みに更新
+    cache->state = ARP_CACHE_STATE_RESOLVED;
+    // Hardware Addressを更新
+    memcpy(cache->ha, ha, ETHER_ADDR_LEN);
+    // 最終更新時刻を更新
+    gettimeofday(&cache->timestamp, NULL);
+
+    debugf("[ARP]UPDATE: pa=%s, ha=%s", ip_addr_ntop(pa, addr1, sizeof(addr1)), ether_addr_ntop(ha, addr2, sizeof(addr2)));
+    return cache;
+}
+
+/**
+ * ARPキャッシュテーブルに新しいエントリを挿入します。
+ *
+ * @param pa プロトコルアドレス (通常はIPアドレス)
+ * @param ha ハードウェアアドレス (通常はMACアドレス)
+ * @return 挿入されたARPキャッシュエントリ。エントリが挿入できない場合はNULL。
+ */
+static struct arp_cache *arp_cache_insert(ip_addr_t pa, const uint8_t *ha)
+{
+    struct arp_cache *cache;
+    char addr1[IP_ADDR_STR_LEN];
+    char addr2[ETHER_ADDR_STR_LEN];
+
+    // exercise14
+    // 使用可能なARPテーブルのentryを取得
+    cache = arp_cache_alloc();
+    if (!cache)
+    {
+        // NULLが返却されたらエラー
+        errorf("arp_cache_alloc() failure");
+        return NULL;
+    }
+    cache->state = ARP_CACHE_STATE_RESOLVED;
+    // Protocol Address(IPアドレス)を更新※updateとの違い
+    cache->pa = pa;
+    memcpy(cache->ha, ha, ETHER_ADDR_LEN);
+    gettimeofday(&cache->timestamp, NULL);
+
+    debugf("[ARP]INSERT: pa=%s, ha=%s", ip_addr_ntop(pa, addr1, sizeof(addr1)), ether_addr_ntop(ha, addr2, sizeof(addr2)));
+    return cache;
 }
 
 /**
@@ -128,6 +281,7 @@ static void arp_input(const uint8_t *data, size_t len, struct net_device *dev)
     struct arp_ether_ip *msg;
     ip_addr_t spa, tpa;
     struct net_iface *iface;
+    int marge = 0; // 更新の可否を示すフラグ
 
     if (len < sizeof(*msg))
     {
@@ -153,17 +307,78 @@ static void arp_input(const uint8_t *data, size_t len, struct net_device *dev)
     // spa/tpa を memcpy() で ip_addr_t の変数へ取り出す
     memcpy(&spa, msg->spa, sizeof(spa));
     memcpy(&tpa, msg->tpa, sizeof(tpa));
+
+    mutex_lock(&mutex); // キャッシュへのアクセスをミューテックスで保護
+    // まずは送信元アドレスのキャッシュ情報の更新を試みる
+    if (arp_cache_update(spa, msg->sha))
+    {
+        marge = 1; // 更新出来たら1にする
+    }
+    mutex_unlock(&mutex); // アンロックする
+
     // デバイスに紐づくIPインタフェースを取得する
     iface = net_device_get_iface(dev, NET_IFACE_FAMILY_IP);
     // ARP要求のターゲットプロトコルアドレスと一致するか確認
     if (iface && ((struct ip_iface *)iface)->unicast == tpa)
     {
+        // 更新されていない=未登録の時
+        if (!marge)
+        {
+            mutex_lock(&mutex);
+            arp_cache_insert(spa, msg->sha); // ARPテーブルに新規登録する
+            mutex_unlock(&mutex);
+        }
+
         // exercise13
         if (ntoh16(msg->hdr.op) == ARP_OP_REQUEST)
         {
             arp_reply(iface, msg->sha, spa, msg->sha);
         }
     }
+}
+
+/**
+ * ARPキャッシュから指定されたIPアドレスに対応するハードウェアアドレスを取得して引数haに反映する。
+ *
+ * @param iface ネットワークインターフェース情報
+ * @param pa 検索するプロトコルアドレス (IPアドレス)
+ * @param ha 取得したハードウェアアドレスを格納するアドレス
+ * @return ARP_RESOLVE_FOUND or ARP_RESOLVE_ERROR
+ */
+int arp_resolve(struct net_iface *iface, ip_addr_t pa, uint8_t *ha)
+{
+    struct arp_cache *cache;
+    char addr1[IP_ADDR_STR_LEN];
+    char addr2[ETHER_ADDR_STR_LEN];
+
+    // インターフェースがイーサネットタイプでない場合はエラー
+    if (iface->dev->type != NET_DEVICE_TYPE_ETHERNET)
+    {
+        debugf("unsupported hardware address type");
+        return ARP_RESOLVE_ERROR;
+    }
+    // インターフェースがIPファミリでない場合はエラー
+    if (iface->family != NET_IFACE_FAMILY_IP)
+    {
+        debugf("unsupported protocol address type");
+        return ARP_RESOLVE_ERROR;
+    }
+    mutex_lock(&mutex);
+    // ARPキャッシュエントリを検索
+    cache = arp_cache_select(pa);
+    if (!cache)
+    {
+        debugf("cache not found, pa=%s", ip_addr_ntop(pa, addr1, sizeof(addr1)));
+        mutex_unlock(&mutex);
+        return ARP_RESOLVE_ERROR;
+    }
+    // 検索結果のキャッシュのハードウェアアドレスを引数haにコピーする
+    // ※呼び出し元にもコピーが反映される
+    memcpy(ha, cache->ha, ETHER_ADDR_LEN);
+    mutex_unlock(&mutex);
+    debugf("[ARP]resolved, [IPアドレス]pa=%s, [MACアドレス]ha=%s",
+           ip_addr_ntop(pa, addr1, sizeof(addr1)), ether_addr_ntop(ha, addr2, sizeof(addr2)));
+    return ARP_RESOLVE_FOUND;
 }
 
 /**

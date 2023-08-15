@@ -21,6 +21,7 @@
  */
 
 #define countof(x) ((sizeof(x) / sizeof(*x)))
+// 配列xの最後の要素の次のアドレスを返すマクロ
 #define tailof(x) (x + countof(x))
 #define indexof(x, y) (((uintptr_t)y - (uintptr_t)x) / sizeof(*y))
 

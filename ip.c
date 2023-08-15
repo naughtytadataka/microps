@@ -9,6 +9,7 @@
 #include "util.h"
 #include "net.h"
 #include "ip.h"
+#include "arp.h"
 
 // IPヘッダの情報を保持するための構造体
 struct ip_hdr
@@ -328,11 +329,20 @@ ip_input(const uint8_t *data, size_t len, struct net_device *dev)
     }
 }
 
-// IPデータをデバイスに送信する関数
-static int
-ip_output_device(struct ip_iface *iface, const uint8_t *data, size_t len, ip_addr_t dst)
+/**
+ * IPデータを指定したインターフェースを通じて送信します。
+ * 
+ * @param iface 送信するIPインターフェース
+ * @param data 送信するデータのポインタ
+ * @param len 送信するデータの長さ
+ * @param dst 送信先のIPアドレス
+ * @return 成功時は0以上、失敗時は-1
+ */
+static int ip_output_device(struct ip_iface *iface, const uint8_t *data, size_t len, ip_addr_t dst)
 {
+    // ハードウェアアドレス
     uint8_t hwaddr[NET_DEVICE_ADDR_LEN] = {};
+    int res;
 
     // ネットワークデバイスのフラグがARPのフラグか判定
     if (NET_IFACE(iface)->dev->flags & NET_DEVICE_FLAG_NEED_ARP)
@@ -345,8 +355,12 @@ ip_output_device(struct ip_iface *iface, const uint8_t *data, size_t len, ip_add
         }
         else
         {
-            errorf("arp does not implement");
-            return -1;
+            // exercise14
+            res = arp_resolve(NET_IFACE(iface), dst, hwaddr);
+            if (res != ARP_RESOLVE_FOUND)
+            {
+                return res;
+            }
         }
     }
     // exercise8
