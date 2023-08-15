@@ -235,6 +235,35 @@ static struct arp_cache *arp_cache_insert(ip_addr_t pa, const uint8_t *ha)
 }
 
 /**
+ * ARPリクエストを送信する。
+ *
+ * @param iface 送信するネットワークインターフェース
+ * @param tpa ターゲットとなるプロトコルアドレス（IPアドレス）
+ * @return 成功時は0以上、エラー時は-1
+ */
+static int arp_request(struct net_iface *iface, ip_addr_t tpa)
+{
+    struct arp_ether_ip request;
+
+    // exercise15
+    // ARPのメッセージ構造体を設定
+    request.hdr.hrd = hton16(ARP_HRD_ETHER);
+    request.hdr.pro = hton16(ARP_PRO_IP);
+    request.hdr.hln = ETHER_ADDR_LEN;
+    request.hdr.pln = IP_ADDR_LEN;
+    request.hdr.op = hton16(ARP_OP_REQUEST);
+    memcpy(request.sha, iface->dev->addr, ETHER_ADDR_LEN);
+    memcpy(request.spa, &((struct ip_iface *)iface)->unicast, IP_ADDR_LEN);
+    memset(request.tha, 0, ETHER_ADDR_LEN);
+    memcpy(request.tpa, &tpa, IP_ADDR_LEN);
+
+    debugf("ARP要求を送信します。 dev=%s, len=%zu", iface->dev->name, sizeof(request));
+    arp_dump((uint8_t *)&request, sizeof(request));
+    // exercise15
+    return net_device_output(iface->dev, ETHER_TYPE_ARP, (uint8_t *)&request, sizeof(request), iface->dev->broadcast);
+}
+
+/**
  * ARPリプライメッセージを生成し、送信する関数。
  *
  * @param iface 対象のネットワークインターフェース。
@@ -368,10 +397,33 @@ int arp_resolve(struct net_iface *iface, ip_addr_t pa, uint8_t *ha)
     cache = arp_cache_select(pa);
     if (!cache)
     {
-        debugf("cache not found, pa=%s", ip_addr_ntop(pa, addr1, sizeof(addr1)));
+        // IPに一致するエントリがARPテーブルに無い
+
+        debugf("IPアドレスに一致するキャッシュがありません。, pa=%s", ip_addr_ntop(pa, addr1, sizeof(addr1)));
+        // exercise15
+        // 割当て可能なentryを取得
+        cache = arp_cache_alloc();
+        if (!cache)
+        {
+            mutex_unlock(&mutex);
+            errorf("arp_cache_alloc() failure");
+            return ARP_RESOLVE_ERROR;
+        }
+        cache->state = ARP_CACHE_STATE_INCOMPLETE; // 状態は解決途中にする
+        cache->pa = pa;
+        gettimeofday(&cache->timestamp, NULL); // 更新時刻を未解決なのでNULLにする
         mutex_unlock(&mutex);
-        return ARP_RESOLVE_ERROR;
+        arp_request(iface, pa); // ARPリクエストを送信
+        return ARP_RESOLVE_INCOMPLETE;
     }
+    // パケットロスの可能性を考慮して、再度ARPリクエストを送信
+    if (cache->state == ARP_CACHE_STATE_INCOMPLETE)
+    {
+        mutex_unlock(&mutex);
+        arp_request(iface, pa); /* just in case packet loss */
+        return ARP_RESOLVE_INCOMPLETE;
+    }
+
     // 検索結果のキャッシュのハードウェアアドレスを引数haにコピーする
     // ※呼び出し元にもコピーが反映される
     memcpy(ha, cache->ha, ETHER_ADDR_LEN);
