@@ -9,6 +9,7 @@
 #include "net.h"
 #include "ip.h"
 #include "icmp.h"
+#include "arp.h"
 
 #define PRIV(x) ((struct net_protocol *)x->priv)
 
@@ -343,6 +344,12 @@ int net_init(void)
     if (intr_init() == -1)
     {
         errorf("intr_init() failure");
+        return -1;
+    }
+    // exercise13
+    if (arp_init() == -1)
+    {
+        errorf("arp_init() failure");
         return -1;
     }
 
