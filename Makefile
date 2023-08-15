@@ -7,6 +7,7 @@ OBJS = util.o \
        net.o \
        ip.o \
        icmp.o \
+       ether.o \
 
 TESTS = test/step0.exe \
 	test/step1.exe \
@@ -20,6 +21,7 @@ TESTS = test/step0.exe \
   test/step9.exe \
   test/step10.exe \
   test/step11.exe \
+  test/step12.exe \
 
 
 
@@ -32,6 +34,7 @@ ifeq ($(shell uname),Linux)
   # `-pthread`、POSIXスレッドを使用するためのフラグ。Linuxでのマルチスレッドプログラムをコンパイルする際に必要。
   # `-iquote $(BASE)`、コンパイラにヘッダファイルを探すための追加のディレクトリを指示するフラグ。ここでは、Linux用のヘッダファイルが格納されているディレクトリを指定しています。
   CFLAGS := $(CFLAGS) -pthread -iquote $(BASE)
+  DRIVERS := $(DRIVERS) $(BASE)/driver/ether_tap.o
   # OBJSは、コンパイルが必要なオブジェクトファイルのリストを格納する変数。
   # ここでは、Linux用の`intr.o`オブジェクトファイルをリストに追加。
   # `$(BASE)/intr.o`は、`platform/linux/intr.o`を指す。

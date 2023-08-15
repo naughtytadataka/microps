@@ -221,7 +221,19 @@ int net_protocol_register(uint16_t type, void (*handler)(const uint8_t *data, si
     return 0;
 }
 
-// データを受信するための関数
+/**
+ * @brief ネットワークデータの受信処理を行う関数。
+ *
+ * この関数は、指定されたタイプのネットワークプロトコルに対応する処理を行います。
+ * 対応するプロトコルが見つかった場合、データはそのプロトコルのキューに追加され、
+ * ソフトウェア割り込みが発生します。
+ *
+ * @param type ネットワークデータのタイプ（例：IPv4やARPなど）。
+ * @param data 受信したデータの先頭を指すポインタ。
+ * @param len 受信したデータの長さ（バイト単位）。
+ * @param dev データを受信したネットワークデバイスを指すポインタ。
+ * @return データの処理が成功した場合は0、失敗した場合は-1。
+ */
 int net_input_handler(uint16_t type, const uint8_t *data, size_t len, struct net_device *dev)
 {
     struct net_protocol *proto;
