@@ -12,6 +12,7 @@
 #ifndef MAX
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #endif
+// MINは、2つの引数xとyを取り、それらのうち小さい方の値を返します。
 #ifndef MIN
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #endif

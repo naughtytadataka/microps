@@ -116,8 +116,14 @@ queue_push(struct queue_head *queue, void *data)
     return data;
 }
 
-void *
-queue_pop(struct queue_head *queue)
+/**
+ * キューの先頭からデータを取り出します。
+ * 
+ * @param queue  データを取り出すキューのヘッドを指すポインタ。
+ * 
+ * @return キューの先頭のデータ。キューが空の場合はNULL。
+ */
+void *queue_pop(struct queue_head *queue)
 {
     struct queue_entry *entry;
     void *data;
