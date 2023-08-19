@@ -27,11 +27,11 @@ typedef uint32_t ip_addr_t;
 
 struct ip_iface
 {
-    struct net_iface iface;
-    struct ip_iface *next;
-    ip_addr_t unicast;
-    ip_addr_t netmask;
-    ip_addr_t broadcast;
+    struct net_iface iface; // 基本的なネットワークインターフェースの情報
+    struct ip_iface *next;  // 次のIPインターフェースへのポインタ（リンクリスト管理用）
+    ip_addr_t unicast;      // このインターフェースのユニキャストアドレス(他のデバイスがこのインターフェースに送信する際に指定するIPアドレス)
+    ip_addr_t netmask;      // このインターフェースのネットマスク
+    ip_addr_t broadcast;    // このインターフェースのブロードキャストアドレス
 };
 
 extern const ip_addr_t IP_ADDR_ANY;
@@ -41,6 +41,10 @@ extern int
 ip_addr_pton(const char *p, ip_addr_t *n);
 extern char *
 ip_addr_ntop(ip_addr_t n, char *p, size_t size);
+extern int
+ip_route_set_default_gateway(struct ip_iface *iface, const char *gateway);
+extern struct ip_iface *
+ip_route_get_iface(ip_addr_t dst);
 
 extern struct ip_iface *
 ip_iface_alloc(const char *addr, const char *netmask);
