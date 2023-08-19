@@ -11,6 +11,7 @@
 #include "ip.h"
 #include "icmp.h"
 #include "arp.h"
+#include "udp.h"
 
 #define PRIV(x) ((struct net_protocol *)x->priv)
 
@@ -440,6 +441,12 @@ int net_init(void)
     if (icmp_init() == -1)
     {
         errorf("icmp_init() failure");
+        return -1;
+    }
+    // exercise18
+    if (udp_init() == -1)
+    {
+        errorf("udp_init() failure");
         return -1;
     }
     infof("initialized");

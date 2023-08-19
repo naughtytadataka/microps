@@ -16,7 +16,9 @@
 #define IP_PAYLOAD_SIZE_MAX (IP_TOTAL_SIZE_MAX - IP_HDR_SIZE_MIN)
 
 #define IP_ADDR_LEN 4
-#define IP_ADDR_STR_LEN 16 /* "ddd.ddd.ddd.ddd\0" */
+#define IP_ADDR_STR_LEN 16                        /* "ddd.ddd.ddd.ddd\0" */
+// ipエンドポイントの文字列に必要なバッファのサイズ
+#define IP_ENDPOINT_STR_LEN (IP_ADDR_STR_LEN + 6) /* xxx.xxx.xxx.xxx:yyyyy\n */
 
 #define IP_PROTOCOL_ICMP 1
 #define IP_PROTOCOL_TCP 6
@@ -24,6 +26,12 @@
 
 // 32ビットの符号なし整数を表す型に別名をつける
 typedef uint32_t ip_addr_t;
+
+struct ip_endpoint
+{
+    ip_addr_t addr;
+    uint16_t port;
+};
 
 struct ip_iface
 {
@@ -41,6 +49,10 @@ extern int
 ip_addr_pton(const char *p, ip_addr_t *n);
 extern char *
 ip_addr_ntop(ip_addr_t n, char *p, size_t size);
+extern int
+ip_endpoint_pton(const char *p, struct ip_endpoint *n);
+extern char *
+ip_endpoint_ntop(const struct ip_endpoint *n, char *p, size_t size);
 extern int
 ip_route_set_default_gateway(struct ip_iface *iface, const char *gateway);
 extern struct ip_iface *
