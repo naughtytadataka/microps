@@ -23,31 +23,37 @@
 #define countof(x) ((sizeof(x) / sizeof(*x)))
 // 配列xの最後の要素の次のアドレスを返すマクロ
 #define tailof(x) (x + countof(x))
+// このマクロは、yがxの中で何番目に位置しているかのインデックスを返す。
+// xは配列の開始アドレス、yは配列内の特定の要素のアドレスを示す。
 #define indexof(x, y) (((uintptr_t)y - (uintptr_t)x) / sizeof(*y))
 
 /*
  * Time
  */
 
-#define timeval_add_usec(x, y)         \
-    do {                               \
-        (x)->tv_sec += y / 1000000;    \
-        (x)->tv_usec += y % 1000000;   \
-        if ((x)->tv_usec >= 1000000) { \
-            (x)->tv_sec += 1;          \
-            (x)->tv_usec -= 1000000;   \
-        }                              \
-    } while(0);
+#define timeval_add_usec(x, y)       \
+    do                               \
+    {                                \
+        (x)->tv_sec += y / 1000000;  \
+        (x)->tv_usec += y % 1000000; \
+        if ((x)->tv_usec >= 1000000) \
+        {                            \
+            (x)->tv_sec += 1;        \
+            (x)->tv_usec -= 1000000; \
+        }                            \
+    } while (0);
 
-#define timespec_add_nsec(x, y)           \
-    do {                                  \
-        (x)->tv_sec += y / 1000000000;    \
-        (x)->tv_nsec += y % 1000000000;   \
-        if ((x)->tv_nsec >= 1000000000) { \
-            (x)->tv_sec += 1;             \
-            (x)->tv_nsec -= 1000000000;   \
-        }                                 \
-    } while(0);
+#define timespec_add_nsec(x, y)         \
+    do                                  \
+    {                                   \
+        (x)->tv_sec += y / 1000000000;  \
+        (x)->tv_nsec += y % 1000000000; \
+        if ((x)->tv_nsec >= 1000000000) \
+        {                               \
+            (x)->tv_sec += 1;           \
+            (x)->tv_nsec -= 1000000000; \
+        }                               \
+    } while (0);
 
 /*
  * Logging
@@ -75,7 +81,8 @@ hexdump(FILE *fp, const void *data, size_t size);
 
 struct queue_entry;
 
-struct queue_head {
+struct queue_head
+{
     struct queue_entry *head;
     struct queue_entry *tail;
     unsigned int num;
