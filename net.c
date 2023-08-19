@@ -45,6 +45,13 @@ struct net_timer
     void (*handler)(void);   // 発火時に呼び出す関数のポインタ
 };
 
+struct net_event
+{
+    struct net_event *next;
+    void (*handler)(void *arg);
+    void *arg;
+};
+
 // ネットワークデバイスのリストの先頭を指す変数
 static struct net_device *devices;
 // 登録されているプロトコルのリスト（グローバル変数）※リンクリストの概念
@@ -52,6 +59,8 @@ static struct net_device *devices;
 static struct net_protocol *protocols;
 // タイマーリスト
 static struct net_timer *timers;
+
+static struct net_event *events;
 
 // ネットワークデバイスのメモリを確保する
 struct net_device *
@@ -375,6 +384,54 @@ int net_softirq_handler(void)
         }
     }
     return 0;
+}
+
+/**
+ * @brief ネットワークイベントのリストにイベントを登録します。
+ *
+ * @param handler イベント発生時に実行される関数へのポインタ。
+ * @param arg ハンドラに渡される引数。
+ * @return 成功時は0、メモリ確保に失敗した場合は-1を返します。
+ */
+int net_event_subscribe(void (*handler)(void *arg), void *arg)
+{
+    struct net_event *event;
+
+    event = memory_alloc(sizeof(*event));
+    if (!event)
+    {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    event->handler = handler;
+    event->arg = arg;
+    event->next = events;
+    events = event;
+    return 0;
+}
+
+/**
+ * @brief 登録されたすべてのネットワークイベントハンドラを実行します。
+ *
+ * @return 常に0を返します。
+ */
+int net_event_handler(void)
+{
+    struct net_event *event;
+
+    for (event = events; event; event = event->next)
+    {
+        event->handler(event->arg);
+    }
+    return 0;
+}
+
+/**
+ * @brief ネットワークイベントを発生させるための割り込みを生成します。
+ */
+void net_raise_event()
+{
+    intr_raise_irq(INTR_IRQ_EVENT);
 }
 
 // ネットワークを開始する関数

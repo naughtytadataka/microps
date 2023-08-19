@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <errno.h>
 
 #include "platform.h"
 #include "util.h"
@@ -46,7 +47,7 @@ struct udp_pcb
     int state;
     struct ip_endpoint local; // 自分のアドレス＆ポート番号
     struct queue_head queue;
-    int wc; // waitカウント（PCBを使用中のスレッドの数）
+    struct sched_ctx ctx; // スケジューラの構造体
 };
 
 // 受信キューのエントリの構造体
@@ -104,6 +105,7 @@ static struct udp_pcb *udp_pcb_alloc(void)
         if (pcb->state == UDP_PCB_STATE_FREE)
         {
             pcb->state = UDP_PCB_STATE_OPEN;
+            sched_ctx_init(&pcb->ctx); // 構造体の初期化
             return pcb;
         }
     }
@@ -119,9 +121,10 @@ static struct udp_pcb *udp_pcb_alloc(void)
 static void udp_pcb_release(struct udp_pcb *pcb)
 {
     struct queue_entry *entry;
-    if (pcb->wc)
+    pcb->state = UDP_PCB_STATE_CLOSING;
+    if (sched_ctx_destroy(&pcb->ctx) == -1)
     {
-        pcb->state = UDP_PCB_STATE_CLOSING;
+        sched_wakeup(&pcb->ctx);
         return;
     }
 
@@ -334,6 +337,28 @@ ssize_t udp_output(struct ip_endpoint *src, struct ip_endpoint *dst, const uint8
 }
 
 /**
+ * イベントハンドラ関数。
+ * 状態が「OPEN」のすべてのUDP PCB（プロトコル制御ブロック）に対して、スケジュールの割り込みを行います。
+ * 
+ * @param arg
+ */
+static void event_handler(void *arg)
+{
+    struct udp_pcb *pcb;
+
+    (void)arg;
+    mutex_lock(&mutex);
+    for (pcb = pcbs; pcb < tailof(pcbs); pcb++)
+    {
+        if (pcb->state == UDP_PCB_STATE_OPEN)
+        {
+            sched_interrupt(&pcb->ctx);
+        }
+    }
+    mutex_unlock(&mutex);
+}
+
+/**
  * UDPプロトコルの初期化関数。
  * IPプロトコルスタックにUDPの受信処理関数を登録する。
  *
@@ -345,6 +370,12 @@ int udp_init(void)
     if (ip_protocol_register(IP_PROTOCOL_UDP, udp_input) == -1)
     {
         errorf("ip_protocol_register() failure");
+        return -1;
+    }
+    // ハンドラの登録・設定
+    if (net_event_subscribe(event_handler, NULL) == -1)
+    {
+        errorf("net_event_subscribe() failure");
         return -1;
     }
     return 0;
@@ -520,6 +551,7 @@ ssize_t udp_recvfrom(int id, uint8_t *buf, size_t size, struct ip_endpoint *fore
     struct udp_pcb *pcb;
     struct udp_queue_entry *entry;
     ssize_t len;
+    int err;
 
     mutex_lock(&mutex);
     pcb = udp_pcb_get(id);
@@ -538,11 +570,17 @@ ssize_t udp_recvfrom(int id, uint8_t *buf, size_t size, struct ip_endpoint *fore
         {
             break;
         }
-        pcb->wc++;
-        mutex_unlock(&mutex);
-        sleep(1);
-        mutex_lock(&mutex);
-        pcb->wc--;
+
+        err = sched_sleep(&pcb->ctx, &mutex, NULL); // sched_wakeup() もしくは sched_interrupt() が呼ばれるまでタスクを休止
+        if (err)
+        {
+            // エラーだった場合は sched_interrup() による起床なので errno に EINTR を設定してエラーを返す
+            debugf("interrupted");
+            mutex_unlock(&mutex);
+            errno = EINTR;
+            return -1;
+        }
+
         if (pcb->state == UDP_PCB_STATE_CLOSING)
         {
             debugf("closed");
@@ -554,9 +592,9 @@ ssize_t udp_recvfrom(int id, uint8_t *buf, size_t size, struct ip_endpoint *fore
     mutex_unlock(&mutex);
     if (foreign)
     {
-        *foreign = entry->foreign;// 送信元のアドレス＆ポートをコピー
+        *foreign = entry->foreign; // 送信元のアドレス＆ポートをコピー
     }
-    len = MIN(size, entry->len);// 引数のバッファのサイズとentryのサイズを比べて小さい方を返却する。
+    len = MIN(size, entry->len); // 引数のバッファのサイズとentryのサイズを比べて小さい方を返却する。
     memcpy(buf, entry->data, len);
     memory_free(entry);
     return len;

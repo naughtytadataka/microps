@@ -33,6 +33,7 @@ TESTS = test/step0.exe \
   test/step19.exe \
   test/step20-1.exe \
   test/step20-2.exe \
+  test/step21.exe \
 
 
 
@@ -52,7 +53,7 @@ ifeq ($(shell uname),Linux)
   # OBJSは、コンパイルが必要なオブジェクトファイルのリストを格納する変数。
   # ここでは、Linux用の`intr.o`オブジェクトファイルをリストに追加。
   # `$(BASE)/intr.o`は、`platform/linux/intr.o`を指す。
-  OBJS := $(OBJS) $(BASE)/intr.o
+  OBJS := $(OBJS) $(BASE)/intr.o $(BASE)/sched.o
 endif
 
 ifeq ($(shell uname),Darwin)

@@ -54,6 +54,7 @@ mutex_unlock(mutex_t *mutex)
 // SIGUSR1 は標準的な定数で、UNIX系のシステムでのシグナル処理において特定の意味を持っている
 // 直接SIGUSR1として使うこともできるがより具体的な定数にするためにINTR_IRQ_SOFTIRQとしている？
 #define INTR_IRQ_SOFTIRQ SIGUSR1
+#define INTR_IRQ_EVENT SIGUSR2
 
 #define INTR_IRQ_SHARED 0x0001
 
@@ -68,4 +69,31 @@ extern void
 intr_shutdown(void);
 extern int
 intr_init(void);
+
+// スケジューリングの構造体
+struct sched_ctx
+{
+    // pthread_cond_t は、POSIXスレッド（pthreads）ライブラリで定義されているデータ型
+    // 条件変数は、スレッド間の同期メカニズムの一つ
+    pthread_cond_t cond;// スレッドを休止させるために使用する条件変数
+    int interrupted;// シグナルに割り込まれたことを示すフラグ
+    int wc; // 休止中のタスクの数
+};
+
+#define SCHED_CTX_INITIALIZER          \
+    {                                  \
+        PTHREAD_COND_INITIALIZER, 0, 0 \
+    }
+
+extern int
+sched_ctx_init(struct sched_ctx *ctx);
+extern int
+sched_ctx_destroy(struct sched_ctx *ctx);
+extern int
+sched_sleep(struct sched_ctx *ctx, mutex_t *mutex, const struct timespec *abstime);
+extern int
+sched_wakeup(struct sched_ctx *ctx);
+extern int
+sched_interrupt(struct sched_ctx *ctx);
+
 #endif
