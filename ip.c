@@ -367,9 +367,20 @@ static int ip_output_device(struct ip_iface *iface, const uint8_t *data, size_t 
     return net_device_output(NET_IFACE(iface)->dev, NET_PROTOCOL_TYPE_IP, data, len, hwaddr);
 }
 
-// データをIPパケットに格納する？
-static ssize_t
-ip_output_core(struct ip_iface *iface, uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, uint16_t id, uint16_t offset)
+/**
+ * IPデータのコア出力処理。
+ * 
+ * @param iface 送信するネットワークインターフェース
+ * @param protocol 送信するデータのプロトコルタイプ（例：ICMP, TCP, UDPなど）
+ * @param data 送信するデータのポインタ
+ * @param len 送信するデータの長さ
+ * @param src 送信元IPアドレス
+ * @param dst 宛先IPアドレス
+ * @param id IPヘッダのIDフィールド
+ * @param offset フラグメントのオフセット
+ * @return 成功時は送信したデータの長さ、エラー時は-1
+ */
+static ssize_t ip_output_core(struct ip_iface *iface, uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, uint16_t id, uint16_t offset)
 {
     uint8_t buf[IP_TOTAL_SIZE_MAX];
     struct ip_hdr *hdr;
@@ -415,9 +426,17 @@ ip_generate_id(void)
     return ret;
 }
 
-// IPデータ送信関数
-ssize_t
-ip_output(uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst)
+/**
+ * IPデータを送信する。
+ * 
+ * @param protocol 送信するデータのプロトコルタイプ（例：ICMP, TCP, UDPなど）
+ * @param data 送信するデータのポインタ
+ * @param len 送信するデータの長さ
+ * @param src 送信元IPアドレス
+ * @param dst 宛先IPアドレス
+ * @return 成功時は送信したデータの長さ、エラー時は-1
+ */
+ssize_t ip_output(uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst)
 {
     struct ip_iface *iface;
     char addr[IP_ADDR_STR_LEN];

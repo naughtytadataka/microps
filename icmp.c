@@ -133,7 +133,18 @@ void icmp_input(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, s
     }
 }
 
-// ICMPの出力関数
+/**
+ * ICMPメッセージを送信する。
+ * 
+ * @param type ICMPメッセージのタイプ
+ * @param code ICMPメッセージのコード
+ * @param values ICMPメッセージの追加情報
+ * @param data ICMPデータ部分のポインタ
+ * @param len ICMPデータ部分の長さ
+ * @param src 送信元IPアドレス
+ * @param dst 宛先IPアドレス
+ * @return 成功時は0以上、エラー時は-1
+ */
 int icmp_output(uint8_t type, uint8_t code, uint32_t values, const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst)
 {
     uint8_t buf[ICMP_BUFSIZ];

@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "platform.h"
 
@@ -12,6 +13,11 @@
 #include "arp.h"
 
 #define PRIV(x) ((struct net_protocol *)x->priv)
+
+/*
+■==このモジュールの役割==
+このモジュールは、ネットワークデバイス、プロトコル、タイマーなどのネットワーク関連のリソースや処理を一元的に管理する。
+*/
 
 struct net_protocol
 {
@@ -29,11 +35,22 @@ struct net_protocol_queue_entry
     uint8_t data[];
 };
 
+// タイマーの構造体
+struct net_timer
+{
+    struct net_timer *next;
+    struct timeval interval; // 発火間隔
+    struct timeval last;     // 前回の発火時間
+    void (*handler)(void);   // 発火時に呼び出す関数のポインタ
+};
+
 // ネットワークデバイスのリストの先頭を指す変数
 static struct net_device *devices;
 // 登録されているプロトコルのリスト（グローバル変数）※リンクリストの概念
 // リストといいつつもリスト型ではなく、リストの先頭の構造体を指す、nextを追うことで結果的にリストになる
 static struct net_protocol *protocols;
+// タイマーリスト
+static struct net_timer *timers;
 
 // ネットワークデバイスのメモリを確保する
 struct net_device *
@@ -219,6 +236,65 @@ int net_protocol_register(uint16_t type, void (*handler)(const uint8_t *data, si
     proto->next = protocols;
     protocols = proto;
     infof("registered, type=0x%04x", type);
+    return 0;
+}
+
+/**
+ * ネットワークタイマを登録する。
+ *
+ * @param interval タイマの間隔を示すtimeval構造体。
+ * @param handler タイマが期限切れになったときに呼び出されるハンドラ関数。
+ * @return 成功時は0、メモリ確保に失敗した場合は-1を返す。
+ */
+int net_timer_register(struct timeval interval, void (*handler)(void))
+{
+    struct net_timer *timer;
+
+    // exercise16
+    timer = memory_alloc(sizeof(*timer));
+    if (!timer)
+    {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    timer->interval = interval;
+
+    // 第一引数のポインタに現在時刻を格納する標準関数
+    // ※第二引数には本来タイムゾーンを格納するが現在では非推奨となっているので基本的にはNULLが格納される
+    gettimeofday(&timer->last, NULL);
+    timer->handler = handler;
+    timer->next = timers;
+    timers = timer;
+
+    infof("registered: interval={%d, %d}", interval.tv_sec, interval.tv_usec);
+    return 0;
+}
+
+/**
+ * 登録されたネットワークタイマのハンドラを実行する。
+ *
+ * この関数は、各タイマが指定された間隔を超えているかどうかを確認し、
+ * 超えている場合はそのタイマのハンドラを実行します。
+ *
+ */
+int net_timer_handler(void)
+{
+    struct net_timer *timer;
+    struct timeval now, diff;
+
+    for (timer = timers; timer; timer = timer->next)
+    {
+        gettimeofday(&now, NULL);
+        // 第一引数と第二引数の差を計算、結果を第三引数に格納する関数
+        timersub(&now, &timer->last, &diff);
+        // 発火間隔と比べて、差分が大きい時1、小さい時0を返却
+        if (timercmp(&timer->interval, &diff, <) != 0)
+        {
+            // exercise16
+            timer->handler();
+            timer->last = now;
+        }
+    }
     return 0;
 }
 

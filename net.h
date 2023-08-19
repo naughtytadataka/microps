@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/time.h>
 
 #ifndef IFNAMSIZ
 #define IFNAMSIZ 16
@@ -23,13 +24,13 @@
 #define NET_DEVICE_IS_UP(x) ((x)->flags & NET_DEVICE_FLAG_UP)
 #define NET_DEVICE_STATE(x) (NET_DEVICE_IS_UP(x) ? "up" : "down")
 
-#define NET_PROTOCOL_TYPE_IP   0x0800
-#define NET_PROTOCOL_TYPE_ARP  0x0806
+#define NET_PROTOCOL_TYPE_IP 0x0800
+#define NET_PROTOCOL_TYPE_ARP 0x0806
 #define NTT_PROTOCOL_TYPE_IPV6 0x86dd
 
 // インタフェースの種別
-#define NET_IFACE_FAMILY_IP    1
-#define NET_IFACE_FAMILY_IPV6  2
+#define NET_IFACE_FAMILY_IP 1
+#define NET_IFACE_FAMILY_IPV6 2
 
 // 引数xをstruct net_iface *型にキャストするマクロ
 #define NET_IFACE(x) ((struct net_iface *)(x))
@@ -45,6 +46,10 @@ externは、このヘッダファイルが「この関数や変数はどこか�
 それと同じように、ヘッダファイルは関数や変数の「メニュー」のようなもので、実際の「レシピ」（関数の実装）は別の場所にあります。
 */
 
+/*
+■==このモジュールの役割==
+このモジュールは、ネットワークデバイス、プロトコル、タイマーなどのネットワーク関連のリソースや処理を一元的に管理する。
+*/
 struct net_device
 {
     struct net_device *next; // 次のデバイスへのポインタ
@@ -81,10 +86,11 @@ struct net_device_ops
 };
 
 // 抽象的なインターフェイスの構造体
-struct net_iface {
+struct net_iface
+{
     struct net_iface *next;
     struct net_device *dev; /* back pointer to parent */
-    int family;// インターフェイス種別
+    int family;             // インターフェイス種別
 };
 
 extern struct net_device *
@@ -100,7 +106,10 @@ net_device_output(struct net_device *dev, uint16_t type, const uint8_t *data, si
 
 extern int
 net_protocol_register(uint16_t type, void (*handler)(const uint8_t *data, size_t len, struct net_device *dev));
-
+extern int
+net_timer_register(struct timeval interval, void (*handler)(void));
+extern int
+net_timer_handler(void);
 extern int
 net_input_handler(uint16_t type, const uint8_t *data, size_t len, struct net_device *dev);
 extern int

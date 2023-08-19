@@ -2,6 +2,8 @@
 #include <string.h>
 #include <signal.h>
 #include <pthread.h>
+#include <time.h>
+#include <errno.h>
 
 #include "platform.h"
 
@@ -77,19 +79,68 @@ int intr_raise_irq(unsigned int irq)
     return pthread_kill(tid, (int)irq);
 }
 
-// 割り込みを処理するスレッド
-static void *
-intr_thread(void *arg)
+/**
+ * インターバルタイマを設定する。
+ *
+ * この関数は、指定された間隔でタイマを設定します。タイマはCLOCK_REALTIMEクロックを使用します。
+ *
+ * @param interval タイマの間隔と期限を示すitimerspec構造体へのポインタ。
+ * @return 成功時は0、失敗時は-1を返す。
+ */
+static int intr_timer_setup(struct itimerspec *interval)
 {
+    timer_t id; // POSIXタイマの格納場所
+
+    // POSIXタイマの生成(CLOCK_REALTIMEは実時間を基準にするクロック)
+    // 第二引数にNULLを指定すると期限切れ時にシグナルを送信
+    if (timer_create(CLOCK_REALTIME, NULL, &id) == -1)
+    {
+        errorf("timer_create: %s", strerror(errno));
+        return -1;
+    }
+    // 期限切れ時間を設定
+    if (timer_settime(id, 0, interval, NULL) == -1)
+    {
+        errorf("timer_settime: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * 割り込みを処理するスレッド関数。
+ *
+ * このスレッドは、特定のシグナルを待ち受け、それに応じた処理を実行します。
+ * 例えば、`SIGALRM` はタイマハンドラを、`SIGUSR1` はネットワークのソフト割り込みハンドラを呼び出します。
+ * また、`SIGHUP` はスレッドの終了フラグを立てるために使用されます。
+ *
+ * @param arg
+ * @return NULL
+ */
+static void *intr_thread(void *arg)
+{
+    // インターバルの設定
+    const struct timespec ts = {0, 1000000}; /* 1ms */
+    struct itimerspec interval = {ts, ts};
+
     int terminate = 0, sig, err; // terminateは終了フラグ、sigは受け取ったシグナル、errはエラーコード
     struct irq_entry *entry;     // 割り込みエントリ
 
     debugf("割り込みスレッド起動: start...");
     // スレッドの同期のためのバリアを待つ。
     pthread_barrier_wait(&barrier);
+
+    // POSIXタイマの生成と設定
+    if (intr_timer_setup(&interval) == -1)
+    {
+        errorf("intr_timer_setup() failure");
+        return NULL;
+    }
     while (!terminate)
     {
         // シグナル待ち
+        // intr_initでsigmaskに追加したシグナルをブロックしているので
+        // sigwaitでブロックしているシグナルを自分のタイミングで取得する。
         err = sigwait(&sigmask, &sig);
         if (err)
         {
@@ -99,12 +150,17 @@ intr_thread(void *arg)
         // 発生したシグナルの種類に応じた処理を記述
         switch (sig)
         {
+
         case SIGHUP: // SIGHUPシグナルが受け取られた場合、終了フラグを立てる
             terminate = 1;
             break;
         case SIGUSR1:
             net_softirq_handler();
             break;
+        case SIGALRM:
+            net_timer_handler();
+            break;
+
         default: // それ以外のシグナルが受け取られた場合、該当する割り込みハンドラを呼び出す
                  // IRQリストを巡回
             for (entry = irqs; entry; entry = entry->next)
@@ -161,7 +217,11 @@ void intr_shutdown(void)
     pthread_join(tid, NULL);
 }
 
-// 割り込み処理の初期化を行う関数
+/**
+ * 割り込み処理の初期化関数。
+ *
+ * @return 常に0を返します。
+ */
 int intr_init(void)
 {
     // 現在のスレッドIDを取得
@@ -170,8 +230,11 @@ int intr_init(void)
     pthread_barrier_init(&barrier, NULL, 2);
     // シグナルマスクを空
     sigemptyset(&sigmask);
-    // SIGHUPシグナルをシグナルマスクに追加
+    // sigaddsetでシグナルマスクに指定したシグナルを追加する
+    // sigmaskに以下のシグナルを追加することで、予期しないタイミング、場所で処理されるのをブロックする
     sigaddset(&sigmask, SIGHUP);
     sigaddset(&sigmask, SIGUSR1);
+    sigaddset(&sigmask, SIGALRM);
+
     return 0;
 }

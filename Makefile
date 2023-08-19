@@ -26,6 +26,7 @@ TESTS = test/step0.exe \
   test/step13.exe \
   test/step14.exe \
   test/step15.exe \
+  test/step16.exe \
 
 
 
@@ -38,6 +39,7 @@ ifeq ($(shell uname),Linux)
   # `-pthread`、POSIXスレッドを使用するためのフラグ。Linuxでのマルチスレッドプログラムをコンパイルする際に必要。
   # `-iquote $(BASE)`、コンパイラにヘッダファイルを探すための追加のディレクトリを指示するフラグ。ここでは、Linux用のヘッダファイルが格納されているディレクトリを指定しています。
   CFLAGS := $(CFLAGS) -pthread -iquote $(BASE)
+  LDFLAGS := $(LDFLAGS) -lrt
   DRIVERS := $(DRIVERS) $(BASE)/driver/ether_tap.o
   # OBJSは、コンパイルが必要なオブジェクトファイルのリストを格納する変数。
   # ここでは、Linux用の`intr.o`オブジェクトファイルをリストに追加。
