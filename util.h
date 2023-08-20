@@ -32,6 +32,9 @@
  * Time
  */
 
+// 指定されたtimeval構造体にマイクロ秒を追加するマクロ。
+// @param x timeval構造体へのポインタ。この構造体にマイクロ秒が追加されます。
+// @param y 追加するマイクロ秒の数。
 #define timeval_add_usec(x, y)       \
     do                               \
     {                                \

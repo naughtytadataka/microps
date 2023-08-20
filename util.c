@@ -158,8 +158,14 @@ void *queue_pop(struct queue_head *queue)
     return data;
 }
 
-void *
-queue_peek(struct queue_head *queue)
+/**
+ * キューの先頭のデータを参照する関数。
+ * この関数はキューからデータを削除せずに、先頭のデータを参照します。
+ *
+ * @param queue 参照するキューのヘッドへのポインタ。
+ * @return キューの先頭のデータへのポインタ。キューが空の場合はNULL。
+ */
+void *queue_peek(struct queue_head *queue)
 {
     if (!queue || !queue->head)
     {
@@ -168,6 +174,15 @@ queue_peek(struct queue_head *queue)
     return queue->head->data;
 }
 
+/**
+ * キュー内の各エントリに対して指定された関数を実行する関数。
+ *
+ * @param queue 処理対象のキュー。
+ * @param func  キューの各エントリに対して実行する関数。
+ * @param arg   funcに渡す引数。
+ *
+ * @note funcは、第一引数としてarg、第二引数としてキューエントリのデータを受け取ります。
+ */
 void queue_foreach(struct queue_head *queue, void (*func)(void *arg, void *data), void *arg)
 {
     struct queue_entry *entry;

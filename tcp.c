@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <errno.h>
 
 #include "platform.h"
@@ -39,6 +40,8 @@
 #define TCP_PCB_STATE_TIME_WAIT 9
 #define TCP_PCB_STATE_CLOSE_WAIT 10
 #define TCP_PCB_STATE_LAST_ACK 11
+#define TCP_DEFAULT_RTO 200000     /* micro seconds */
+#define TCP_RETRANSMIT_DEADLINE 12 /* seconds */
 
 // TCPの疑似ヘッダの構造体(チェックサム用)
 struct pseudo_hdr
@@ -100,14 +103,27 @@ struct tcp_pcb
         uint16_t up;  // 受信の緊急ポインタ
     } rcv;
 
-    uint32_t irs;         // 初期受信シーケンス番号
-    uint16_t mtu;         // 最大転送ユニット（この接続で送受信できる最大のデータサイズ）
-    uint16_t mss;         // 最大セグメントサイズ（TCPセグメントの最大サイズ）
-    uint8_t buf[65535];   // 受信データを一時的に保存するバッファ
-    struct sched_ctx ctx; // スケジューリングに関する情報（スレッドの同期や待機に使用）
+    uint32_t irs;            // 初期受信シーケンス番号
+    uint16_t mtu;            // 最大転送ユニット（この接続で送受信できる最大のデータサイズ）
+    uint16_t mss;            // 最大セグメントサイズ（TCPセグメントの最大サイズ）
+    uint8_t buf[65535];      // 受信データを一時的に保存するバッファ
+    struct sched_ctx ctx;    // スケジューリングに関する情報（スレッドの同期や待機に使用）
+    struct queue_head queue; // 受信キュー
+};
+
+struct tcp_queue_entry
+{
+    struct timeval first; // 初回送信時刻
+    struct timeval last;  // 最終送信時刻（前回の再送時刻）
+    unsigned int rto;     // 再送タイムアウト（前回の再送時刻からこの時間が経過したら再送を実施）
+    uint32_t seq;         // セグメントのシーケンス番号
+    uint8_t flg;          // 制御フラグ
+    size_t len;
+    uint8_t data[];
 };
 
 static mutex_t mutex = MUTEX_INITIALIZER;
+// コントロールブロックのリスト
 static struct tcp_pcb pcbs[TCP_PCB_SIZE];
 
 /**
@@ -346,6 +362,115 @@ static ssize_t tcp_output_segment(uint32_t seq, uint32_t ack, uint8_t flg, uint1
     return len;
 }
 
+/*
+ * TCP Retransmit
+ *
+ * NOTE: TCP Retransmit functions must be called after mutex locked
+ */
+
+/**
+ * TCP再送キューにエントリを追加する関数。
+ * この関数は、指定された情報を使用して再送キューに新しいエントリを作成し、
+ * そのエントリをキューに追加します。
+ *
+ * @param pcb  再送キューを持つTCPコントロールブロックへのポインタ。
+ * @param seq  送信データのシーケンス番号。
+ * @param flg  TCPフラグ。
+ * @param data 送信するデータへのポインタ。
+ * @param len  送信するデータの長さ。
+ * @return 成功時は0、失敗時は-1。
+ */
+static int tcp_retransmit_queue_add(struct tcp_pcb *pcb, uint32_t seq, uint8_t flg, uint8_t *data, size_t len)
+{
+    struct tcp_queue_entry *entry;
+
+    entry = memory_alloc(sizeof(*entry) + len);
+    if (!entry)
+    {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    entry->rto = TCP_DEFAULT_RTO;
+    entry->seq = seq;
+    entry->flg = flg;
+    entry->len = len;
+    memcpy(entry->data, data, entry->len);
+    gettimeofday(&entry->first, NULL); // 現在時刻格納
+    entry->last = entry->first;        // firstと同じ日時を格納
+    if (!queue_push(&pcb->queue, entry))
+    {
+        errorf("queue_push() failure");
+        memory_free(entry);
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * TCP再送キューのクリーンアップを行う関数。
+ * この関数は、ACKの応答が得られたセグメントを再送キューから削除します。
+ *
+ * @param pcb TCPプロトコル制御ブロック。このPCBに関連する再送キューをクリーンアップします。
+ */
+static void tcp_retransmit_queue_cleanup(struct tcp_pcb *pcb)
+{
+    struct tcp_queue_entry *entry;
+
+    while (1)
+    {
+        entry = queue_peek(&pcb->queue); // queueの先頭を取得
+        if (!entry)
+        {
+            break;
+        }
+        // ACKの応答が得られていなかったら終了
+        if (entry->seq >= pcb->snd.una)
+        {
+            break;
+        }
+        // ackの応答が得られていれば、受信キューから取り出す
+        entry = queue_pop(&pcb->queue);
+        debugf("[ackの応答アリ、受信キューから取り出します]remove, seq=%u, flags=%s, len=%u", entry->seq, tcp_flg_ntoa(entry->flg), entry->len);
+        memory_free(entry);
+    }
+    return;
+}
+
+/**
+ * TCP再送キューからセグメントを再送する関数。
+ * この関数は、指定されたセグメントが再送のタイムアウトを超えた場合、または再送の最大期限を超えた場合に呼び出されます。
+ *
+ * @param arg   再送するTCP制御ブロックへのポインタ。
+ * @param data  再送するキューエントリへのポインタ。
+ */
+static void tcp_retransmit_queue_emit(void *arg, void *data)
+{
+    struct tcp_pcb *pcb;
+    struct tcp_queue_entry *entry;
+    struct timeval now, diff, timeout;
+
+    pcb = (struct tcp_pcb *)arg;            // tcp_pcb型にキャスト
+    entry = (struct tcp_queue_entry *)data; // tcp_queue_entryにキャスト
+    gettimeofday(&now, NULL);               // 現在時刻取得
+    timersub(&now, &entry->first, &diff);   // 初回送信時刻との差分取得
+    if (diff.tv_sec >= TCP_RETRANSMIT_DEADLINE)
+    {
+        // 初回送信からの差分がデッドライン以上なら破棄
+        pcb->state = TCP_PCB_STATE_CLOSED;
+        sched_wakeup(&pcb->ctx);
+        return;
+    }
+    timeout = entry->last;                  // 前回の再送時刻を取得
+    timeval_add_usec(&timeout, entry->rto); // 再送時間を計算
+    if (timercmp(&now, &timeout, >))
+    {
+        // 再送予定時刻を過ぎていたらTCPセグメントを再送
+        tcp_output_segment(entry->seq, pcb->rcv.nxt, entry->flg, pcb->rcv.wnd, entry->data, entry->len, &pcb->local, &pcb->foreign);
+        entry->last = now; // 最終送信時刻を更新
+        entry->rto *= 2;   // 再送タイムアウト（次の再送までの時間）を2倍の値で設定
+    }
+}
+
 /**
  * 指定されたTCP制御ブロックを使用してTCPセグメントを出力します。
  * シーケンス番号や確認応答番号など、必要な情報はTCP制御ブロックから取得出来る。
@@ -367,6 +492,8 @@ static ssize_t tcp_output(struct tcp_pcb *pcb, uint8_t flg, uint8_t *data, size_
     }
     if (TCP_FLG_ISSET(flg, TCP_FLG_SYN | TCP_FLG_FIN) || len)
     {
+        // TCP接続の開始（SYN）、終了（FIN）、またはデータを伴うセグメントを送信する際に、再送キューにセグメントを追加する
+        tcp_retransmit_queue_add(pcb, seq, flg, data, len);
     }
     // PCBの情報を使ってTCPセグメントを送信
     return tcp_output_segment(seq, pcb->rcv.nxt, flg, pcb->rcv.wnd, data, len, &pcb->local, &pcb->foreign);
@@ -598,7 +725,7 @@ static void tcp_segment_arrives(struct tcp_segment_info *seg, uint8_t flags, uin
         if (pcb->snd.una < seg->ack && seg->ack <= pcb->snd.nxt)
         {
             pcb->snd.una = seg->ack;
-            /* TODO: Any segments on the retransmission queue which are thereby entirely acknowledged are removed */
+            tcp_retransmit_queue_cleanup(pcb);
             /* ignore: Users should receive positive acknowledgments for buffers
                         which have been SENT and fully acknowledged (i.e., SEND buffer should be returned with "ok" response) */
             if (pcb->snd.wl1 < seg->seq || (pcb->snd.wl1 == seg->seq && pcb->snd.wl2 <= seg->ack))
@@ -729,6 +856,27 @@ static void tcp_input(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t 
     return;
 }
 
+/**
+ * TCPのタイマー処理を行う関数。
+ * すべてのTCP制御ブロック（PCB）を走査し、再送キューにある使用中の各セグメントに対して再送処理を試みる。
+ *
+ */
+static void tcp_timer(void)
+{
+    struct tcp_pcb *pcb;
+
+    mutex_lock(&mutex);
+    for (pcb = pcbs; pcb < tailof(pcbs); pcb++) {
+        // 使用されていないpcbはスキップ
+        if (pcb->state == TCP_PCB_STATE_FREE) {
+            continue;
+        }
+        // それ以外の再送キューにあるセグメントに対して再送処理
+        queue_foreach(&pcb->queue, tcp_retransmit_queue_emit, pcb);
+    }
+    mutex_unlock(&mutex);
+}
+
 static void
 event_handler(void *arg)
 {
@@ -753,6 +901,8 @@ event_handler(void *arg)
  */
 int tcp_init(void)
 {
+    struct timeval interval = {0,100000};
+
     // exercise22
     if (ip_protocol_register(IP_PROTOCOL_TCP, tcp_input) == -1)
     {
@@ -760,6 +910,10 @@ int tcp_init(void)
         return -1;
     }
     net_event_subscribe(event_handler, NULL);
+    if (net_timer_register(interval, tcp_timer) == -1) {
+        errorf("net_timer_register() failure");
+        return -1;
+    }
     return 0;
 }
 
@@ -863,7 +1017,7 @@ int tcp_close(int id)
 
 /**
  * TCP接続を通じてデータを送信する関数。
- * 
+ *
  * @param id   TCP接続の識別子。`tcp_open_rfc793`関数で取得したIDを指定する。
  * @param data 送信するデータへのポインタ。
  * @param len  送信するデータの長さ。
@@ -888,7 +1042,7 @@ RETRY:
     switch (pcb->state)
     {
     case TCP_PCB_STATE_ESTABLISHED:
-    // 送信先のIPアドレスに対応するインターフェースを取得
+        // 送信先のIPアドレスに対応するインターフェースを取得
         iface = ip_route_get_iface(pcb->foreign.addr);
         if (!iface)
         {
