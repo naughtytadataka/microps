@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <errno.h>
 
 #include "platform.h"
 #include "util.h"
@@ -11,12 +12,12 @@
 #include "tcp.h"
 
 // TCPヘッダのフラグフィールドの値
-#define TCP_FLG_FIN 0x01  // FINフラグ: 接続の終了を示す
-#define TCP_FLG_SYN 0x02  // SYNフラグ: 接続の開始を示す
-#define TCP_FLG_RST 0x04  // RSTフラグ: 接続のリセットを示す
-#define TCP_FLG_PSH 0x08  // PSHフラグ: 受信側にデータの即時処理を要求する
-#define TCP_FLG_ACK 0x10  // ACKフラグ: 前回の通信を確認する
-#define TCP_FLG_URG 0x20  // URGフラグ: 緊急データの存在を示す
+#define TCP_FLG_FIN 0x01 // FINフラグ: 接続の終了を示す
+#define TCP_FLG_SYN 0x02 // SYNフラグ: 接続の開始を示す
+#define TCP_FLG_RST 0x04 // RSTフラグ: 接続のリセットを示す
+#define TCP_FLG_PSH 0x08 // PSHフラグ: 受信側にデータの即時処理を要求する
+#define TCP_FLG_ACK 0x10 // ACKフラグ: 前回の通信を確認する
+#define TCP_FLG_URG 0x20 // URGフラグ: 緊急データの存在を示す
 
 // TCPフラグが指定された値と完全に一致するかどうかを確認します。x 検査するTCPフラグ。y 一致を確認する値。フラグが指定された値と完全に一致する場合は1、それ以外の場合は0。
 #define TCP_FLG_IS(x, y) ((x & 0x3f) == (y))
@@ -83,7 +84,7 @@ struct tcp_pcb
     struct
     {
         uint32_t nxt; // 次に送信するシーケンス番号
-        uint32_t una; // まだ確認されていない最初のシーケンス番号
+        uint32_t una; // ACKが返ってきていない最後のシーケンス番号
         uint16_t wnd; // 送信ウィンドウサイズ
         uint16_t up;  // 送信の緊急ポインタ
         uint32_t wl1; // ウィンドウ更新のための最後のシーケンス番号
@@ -375,7 +376,7 @@ static ssize_t tcp_output(struct tcp_pcb *pcb, uint8_t flg, uint8_t *data, size_
 
 /**
  * TCPセグメントが到着したときの処理を行います。
- * 
+ *
  * 既存の接続(PCB: Protocol Control Block)を検索し、該当する接続が存在しない、または接続が閉じられている場合、
  * 必要に応じてRST(リセット)フラグを持つTCPセグメントを送信します。
  *
@@ -391,18 +392,163 @@ static void tcp_segment_arrives(struct tcp_segment_info *seg, uint8_t flags, uin
     struct tcp_pcb *pcb;
 
     pcb = tcp_pcb_select(local, foreign);
-    if (!pcb || pcb->state == TCP_PCB_STATE_CLOSED) {
-        if (TCP_FLG_ISSET(flags, TCP_FLG_RST)) {
+    // pcbが見つからない、もしくは状態がCLOSED=使用していない時
+    if (!pcb || pcb->state == TCP_PCB_STATE_CLOSED)
+    {
+        if (TCP_FLG_ISSET(flags, TCP_FLG_RST))
+        {
             return;
         }
         // 使用していないポートに何か飛んで来たら RST を返す
-        if (!TCP_FLG_ISSET(flags, TCP_FLG_ACK)) {
+        if (!TCP_FLG_ISSET(flags, TCP_FLG_ACK))
+        {
             tcp_output_segment(0, seg->seq + seg->len, TCP_FLG_RST | TCP_FLG_ACK, 0, NULL, 0, local, foreign);
-        } else {
+        }
+        else
+        {
             tcp_output_segment(seg->ack, 0, TCP_FLG_RST, 0, NULL, 0, local, foreign);
         }
         return;
     }
+    switch (pcb->state)
+    {
+    case TCP_PCB_STATE_LISTEN:
+        /*
+         * 1st check for an RST
+         */
+        if (TCP_FLG_ISSET(flags, TCP_FLG_RST))
+        {
+            // フラグがリセットなら終了
+            return;
+        }
+        /*
+         * 2nd check for an ACK
+         */
+        if (TCP_FLG_ISSET(flags, TCP_FLG_ACK))
+        {
+            // ACKフラグがセットされている場合、RSTフラグを返す
+            tcp_output_segment(seg->ack, 0, TCP_FLG_RST, 0, NULL, 0, local, foreign);
+            return;
+        }
+        /*
+         * 3rd check for an SYN
+         */
+        if (TCP_FLG_ISSET(flags, TCP_FLG_SYN))
+        {
+            /* ignore: security/compartment check */
+            /* ignore: precedence check */
+            // 通信先の情報を保存
+            pcb->local = *local;
+            pcb->foreign = *foreign;
+            // 受信ウィンドウのサイズを設定
+            pcb->rcv.wnd = sizeof(pcb->buf);
+            // 次に受信を期待するシーケンス番号（ACKで使われる）
+            pcb->rcv.nxt = seg->seq + 1;
+            // 初期受信シーケンス番号を保存
+            pcb->irs = seg->seq;
+            // 初期送信シーケンス番号をランダムに設定
+            pcb->iss = random();
+            // SYNとACKフラグを持つセグメントを送信
+            tcp_output(pcb, TCP_FLG_SYN | TCP_FLG_ACK, NULL, 0);
+            // 次に送信するシーケンス番号
+            pcb->snd.nxt = pcb->iss + 1;
+            // ACKが返ってきていない最後のシーケンス番号
+            pcb->snd.una = pcb->iss;
+            // 状態をSYN_RECEIVEDに変更
+            pcb->state = TCP_PCB_STATE_SYN_RECEIVED;
+            /* ignore: Note that any other incoming control or data             */
+            /* (combined with SYN) will be processed in the SYN-RECEIVED state, */
+            /* but processing of SYN and ACK  should not be repeated            */
+            return;
+        }
+        /*
+         * 4th other text or control
+         */
+
+        /* drop segment */
+        return;
+    case TCP_PCB_STATE_SYN_SENT:
+        /*
+         * 1st check the ACK bit
+         */
+
+        /*
+         * 2nd check the RST bit
+         */
+
+        /*
+         * 3rd check security and precedence (ignore)
+         */
+
+        /*
+         * 4th check the SYN bit
+         */
+
+        /*
+         * 5th, if neither of the SYN or RST bits is set then drop the segment and return
+         */
+
+        /* drop segment */
+        return;
+    }
+    /*
+     * Otherwise
+     */
+
+    /*
+     * 1st check sequence number
+     */
+
+    /*
+     * 2nd check the RST bit
+     */
+
+    /*
+     * 3rd check security and precedence (ignore)
+     */
+
+    /*
+     * 4th check the SYN bit
+     */
+
+    /*
+     * 5th check the ACK field
+     */
+    if (!TCP_FLG_ISSET(flags, TCP_FLG_ACK))
+    {
+        // ACKフラグがセットされていない場合、セグメントを破棄
+        return;
+    }
+
+    switch (pcb->state)
+    {
+    case TCP_PCB_STATE_SYN_RECEIVED:
+        // ACKが返ってきていない最後のシーケンス番号と次に送信するシーケンス番号の範囲内であることを確認
+        if (pcb->snd.una <= seg->ack && seg->ack <= pcb->snd.nxt)
+        {
+            pcb->state = TCP_PCB_STATE_ESTABLISHED;
+            sched_wakeup(&pcb->ctx);
+        }
+        else
+        {
+            tcp_output_segment(seg->ack, 0, TCP_FLG_RST, 0, NULL, 0, local, foreign);
+            return;
+        }
+        break;
+    }
+    /*
+     * 6th, check the URG bit (ignore)
+     */
+
+    /*
+     * 7th, process the segment text
+     */
+
+    /*
+     * 8th, check the FIN bit
+     */
+
+    return;
 }
 
 /**
@@ -426,7 +572,6 @@ static void tcp_input(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t 
     struct ip_endpoint local, foreign;
     uint16_t hlen;
     struct tcp_segment_info seg;
-
 
     if (len < sizeof(*hdr))
     {
@@ -470,10 +615,12 @@ static void tcp_input(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t 
     seg.ack = ntoh32(hdr->ack);
     seg.len = len - hlen;
     // SYNまたはFINフラグがセットされている場合、データ長を1増やす
-    if (TCP_FLG_ISSET(hdr->flg, TCP_FLG_SYN)) {
+    if (TCP_FLG_ISSET(hdr->flg, TCP_FLG_SYN))
+    {
         seg.len++;
     }
-    if (TCP_FLG_ISSET(hdr->flg, TCP_FLG_FIN)) {
+    if (TCP_FLG_ISSET(hdr->flg, TCP_FLG_FIN))
+    {
         seg.len++;
     }
     seg.wnd = ntoh16(hdr->wnd);
@@ -482,6 +629,22 @@ static void tcp_input(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t 
     tcp_segment_arrives(&seg, hdr->flg, (uint8_t *)hdr + hlen, len - hlen, &local, &foreign);
     mutex_unlock(&mutex);
     return;
+}
+
+static void
+event_handler(void *arg)
+{
+    struct tcp_pcb *pcb;
+
+    mutex_lock(&mutex);
+    for (pcb = pcbs; pcb < tailof(pcbs); pcb++)
+    {
+        if (pcb->state != TCP_PCB_STATE_FREE)
+        {
+            sched_interrupt(&pcb->ctx);
+        }
+    }
+    mutex_unlock(&mutex);
 }
 
 /**
@@ -498,5 +661,104 @@ int tcp_init(void)
         errorf("ip_protocol_register() failure");
         return -1;
     }
+    net_event_subscribe(event_handler, NULL);
+    return 0;
+}
+
+/**
+ * RFC793に基づいてTCP接続を開く関数。
+ *
+ * @param local   ローカルエンドポイント情報。
+ * @param foreign 対向エンドポイント情報。NULLの場合は任意のエンドポイントからの接続を受け入れる。
+ * @param active  アクティブオープンを行う場合は1、パッシブオープンの場合は0。
+ * @return 成功時はPCBのID、失敗時は-1。
+ */
+int tcp_open_rfc793(struct ip_endpoint *local, struct ip_endpoint *foreign, int active)
+{
+    struct tcp_pcb *pcb;
+    char ep1[IP_ENDPOINT_STR_LEN];
+    char ep2[IP_ENDPOINT_STR_LEN];
+    int state, id;
+
+    mutex_lock(&mutex);
+    pcb = tcp_pcb_alloc();
+    if (!pcb)
+    {
+        errorf("tcp_pcb_alloc() failure");
+        mutex_unlock(&mutex);
+        return -1;
+    }
+    if (active)
+    {
+        errorf("active open does not implement");
+        tcp_pcb_release(pcb);
+        mutex_unlock(&mutex);
+        return -1;
+    }
+    else
+    {
+        debugf("passive open: local=%s, waiting for connection...", ip_endpoint_ntop(local, ep1, sizeof(ep1)));
+        pcb->local = *local;
+        // RFC793の仕様だと外部アドレスを限定してLISTEN可能（ソケットAPIではできない）
+        if (foreign)
+        {
+            pcb->foreign = *foreign;
+        }
+        pcb->state = TCP_PCB_STATE_LISTEN; // LISTEN 状態へ移行
+    }
+AGAIN:
+    state = pcb->state;
+    // PCBの状態が変化するまで待機
+    while (pcb->state == state)
+    {
+        if (sched_sleep(&pcb->ctx, &mutex, NULL) == -1)
+        {
+            // シグナルによる割り込みが発生（EINTR）
+            debugf("interrupted");
+            pcb->state = TCP_PCB_STATE_CLOSED;
+            tcp_pcb_release(pcb);
+            mutex_unlock(&mutex);
+            errno = EINTR;
+            return -1;
+        }
+    }
+    if (pcb->state != TCP_PCB_STATE_ESTABLISHED)
+    {
+        // SYN_RECEIVED の状態だったらリトライ
+        if (pcb->state == TCP_PCB_STATE_SYN_RECEIVED)
+        {
+            goto AGAIN;
+        }
+        errorf("open error: %d", pcb->state);
+        // PCB を CLOSED の状態にしてリリース
+        pcb->state = TCP_PCB_STATE_CLOSED;
+        tcp_pcb_release(pcb);
+        mutex_unlock(&mutex);
+        return -1;
+    }
+    id = tcp_pcb_id(pcb);
+
+    debugf("[コネクション確立]connection established: local=%s, foreign=%s",
+           ip_endpoint_ntop(&pcb->local, ep1, sizeof(ep1)), ip_endpoint_ntop(&pcb->foreign, ep2, sizeof(ep2)));
+    pthread_mutex_unlock(&mutex);
+    // コネクションが確立したら PCB の ID を返す
+    return id;
+}
+
+int tcp_close(int id)
+{
+    struct tcp_pcb *pcb;
+
+    mutex_lock(&mutex);
+    pcb = tcp_pcb_get(id);
+    if (!pcb)
+    {
+        errorf("pcb not found");
+        mutex_unlock(&mutex);
+        return -1;
+    }
+    tcp_output(pcb, TCP_FLG_RST, NULL, 0);
+    tcp_pcb_release(pcb);
+    mutex_unlock(&mutex);
     return 0;
 }
