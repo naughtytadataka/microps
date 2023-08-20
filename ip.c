@@ -46,8 +46,13 @@ struct ip_route
     struct ip_iface *iface; // この経路への送信に使うインターフェース
 };
 
-const ip_addr_t IP_ADDR_ANY = 0x00000000;       /* 0.0.0.0 */
-const ip_addr_t IP_ADDR_BROADCAST = 0xffffffff; /* 255.255.255.255 */
+// 受信側の発想(0.0.0.0)
+// サーバがこのアドレスにバインドすると、サーバはすべてのネットワークインターフェースを通じて来る接続要求を受け入れる
+// つまり、どのIPアドレスを使用してサーバにアクセスしても、サーバはその接続要求を受け入れる
+const ip_addr_t IP_ADDR_ANY = 0x00000000;
+// 送信側の発想(255.255.255.255)
+// このアドレスにパケットを送信すると、そのパケットはネットワーク上のすべてのデバイスに配信される
+const ip_addr_t IP_ADDR_BROADCAST = 0xffffffff;
 // 登録されているインターフェースのリスト
 static struct ip_iface *ifaces;
 // 登録されているプロトコルのリスト
