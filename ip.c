@@ -671,10 +671,10 @@ ssize_t ip_output(uint8_t protocol, const uint8_t *data, size_t len, ip_addr_t s
         errorf("unable to output with specified source address, addr=%s", ip_addr_ntop(src, addr, sizeof(addr)));
         return -1;
     }
-    // nexthop … IPパケットの次の送り先（IPヘッダの宛先とは異なる）引数srcとdstの使い分けがわからん。
+    // nexthop … IPパケットの次の送り先（IPヘッダの宛先とは異なる）
     nexthop = (route->nexthop != IP_ADDR_ANY) ? route->nexthop : dst;
 
-    debugf("★わからないのでデバッグ★src=%s, dst=%s",
+    debugf("src=%s, dst=%s",
            ip_addr_ntop(src, addr, sizeof(addr)), ip_addr_ntop(dst, addr, sizeof(addr)));
 
     // フラグメンテーション=当該データがこのインターフェースの最大転送サイズを超えた場合にパケットに分割して送信すること。
